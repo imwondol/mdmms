@@ -1,0 +1,214 @@
+package md.base;
+
+import java.io.*;
+import javax.servlet.*;
+import javax.servlet.http.*;
+
+import org.jsoup.*;
+import org.jsoup.nodes.*;
+import org.jsoup.select.*;
+import org.json.simple.*;
+
+public class MDFilter implements Filter {
+	public class SOS extends ServletOutputStream {
+		private ByteArrayOutputStream buffer = null;
+		public SOS(ByteArrayOutputStream buffer) {
+			this.buffer = buffer;
+		}
+
+		@Override
+		public boolean isReady() {
+			// TODO Auto-generated method stub
+			return false;
+		}
+
+		@Override
+		public void setWriteListener(WriteListener arg0) {
+			// TODO Auto-generated method stub
+		}
+
+		@Override
+		public void write(int b) throws IOException {
+			buffer.write(b);
+		}
+		
+		@Override
+		public void write(byte[] abyte0, int i, int j) throws IOException {
+			buffer.write(abyte0, i, j);
+		}
+
+		@Override
+		public void write(byte[] abyte0) throws IOException {
+			buffer.write(abyte0);
+		}		
+	}	
+	
+	public class ResWrapper extends HttpServletResponseWrapper {
+		private ByteArrayOutputStream bOut = new ByteArrayOutputStream();
+		private PrintWriter pwOut = new PrintWriter(bOut);
+		private SOS out = new SOS(bOut);
+
+		private HttpServletRequest request = null;
+		private HttpServletResponse response = null;
+		private boolean isHtml = false;
+		
+		public ResWrapper(HttpServletRequest request, HttpServletResponse response) {
+			super(response);
+			this.request = request;
+			this.response = response;
+		}
+		
+		public ServletOutputStream getOutputStream() throws IOException {
+			String contentType = response.getContentType();
+			isHtml = (contentType != null && (contentType.startsWith("text/html") || contentType.startsWith("application/xml") || contentType.startsWith("application/xhtml+xml")));
+			if(isHtml) {
+				return out;
+			} else {
+				return response.getOutputStream();
+			}
+		}
+
+	    public PrintWriter getWriter() throws IOException {
+			String contentType = response.getContentType();
+			isHtml = (contentType != null && (contentType.startsWith("text/html") || contentType.startsWith("application/xml") || contentType.startsWith("application/xhtml+xml")));
+			if(isHtml) {
+				return pwOut;
+			} else {
+		        return response.getWriter();
+			}
+	    }
+	    
+	    public String getHtml() throws IOException {
+	    	out.flush();
+	    	pwOut.flush();
+	    	return new String(bOut.toByteArray());
+	    }
+	}
+		
+	public class SIS extends ServletInputStream {
+		private ServletInputStream in = null;
+		private OutputStream out = null;
+		private FileInputStream fIn = null;
+		
+		public SIS(ServletInputStream in, OutputStream out) {
+			this.in = in;
+			this.out = out;
+		}
+		
+		public SIS(FileInputStream in) {
+			this.fIn = in;
+		}
+		
+		@Override
+		public boolean isFinished() {
+			// TODO Auto-generated method stub
+			try {
+				if(fIn != null) {
+					return fIn.available() == 0;
+				} else {
+					return in.isFinished();
+				}
+			} catch(Exception e) {
+				
+			}
+			return true;
+		}
+
+		@Override
+		public boolean isReady() {
+			// TODO Auto-generated method stub
+			if(fIn != null) {
+				return true;
+			} else {
+				return in.isReady();
+			}
+		}
+
+		@Override
+		public void setReadListener(ReadListener arg0) {
+			// TODO Auto-generated method stub
+			if(in != null)
+				in.setReadListener(arg0);
+		}
+
+		@Override
+		public int read() throws IOException {
+			// TODO Auto-generated method stub
+			int rtn = 0;
+			if(fIn != null) {
+				rtn = fIn.read();
+			} else {
+				rtn = in.read();
+			}
+			return rtn;
+		}
+	}
+	
+	public class ReqWrapper extends HttpServletRequestWrapper {
+		private HttpServletRequest request = null;
+		public ReqWrapper(HttpServletRequest request, File f) {
+			super(request);
+			// TODO Auto-generated constructor stub
+			this.request = request;
+		}
+
+		public ServletInputStream getInputStream() {
+			return null;
+		}
+		
+	}
+	
+	
+	
+	
+	private static MDJSONStorage storage = null;
+
+	public void init(FilterConfig fConfig) throws ServletException {
+		try {
+			storage = new MDJSONStorage(fConfig.getServletContext().getRealPath("/WEB-INF/MDMMS.json"));
+			storage.load();
+		} catch(Exception e) {
+			throw new ServletException(e);
+		}
+	}
+
+	public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException, ServletException {
+		// 먼저 여기서 보안 여부 검토.
+		HttpServletRequest req = (HttpServletRequest)request;
+		HttpServletResponse res = (HttpServletResponse)response;
+		ResWrapper res_wrapper = new ResWrapper(req, res);
+		chain.doFilter(request, res_wrapper);
+		// 처리할 대상 HTML이 아니면 넘어간다.
+		if(!res_wrapper.isHtml)
+			return;
+
+		String html = res_wrapper.getHtml();
+		res.setCharacterEncoding("UTF-8");
+		
+		Document doc = Jsoup.parse(html);
+		// 여기서 Hook 처리
+		Elements es = doc.select("*[hook]");
+		for(int i=0;i<es.size();i++) {
+			Element e = es.get(i);
+			String k = "hook." + e.attr("hook");
+			JSONObject hInfo = (JSONObject)storage.get(k);
+			if(hInfo != null) {
+				e.html(hInfo.get("html").toString());
+			} else {
+				hInfo = new JSONObject();
+				hInfo.put("html", e.html());
+				storage.put(k, hInfo);
+				storage.save();
+			}
+		}
+		
+		// 여기서 DataSet Setting
+		html = doc.html();
+		res.setContentLength(html.getBytes().length);
+		res.getWriter().print(html);
+	}
+
+	public void destroy() {
+	}
+
+}
